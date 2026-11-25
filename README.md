@@ -120,4 +120,8 @@ pi --approve --no-session --no-tools -p "/handoff-status"
 只有 `.pi/`、`.agents/`、交接檔髒時不觸發；
 非 git repo 不檢查；壓縮與退場各備一份；`/handoff-init` 冪等。
 
+## 待實作規格
+
+- [50% 前自動壓縮並交接](specs/auto-compaction-handoff.md)：供 Pi agent 實作；目前尚未提供此功能。
+
 授權：MIT。
