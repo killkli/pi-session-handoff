@@ -1,0 +1,7 @@
+# 本機開發產物
+node_modules/
+*.log
+.DS_Store
+
+# 測試暫存
+.tmp/

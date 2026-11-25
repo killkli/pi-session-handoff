@@ -1,0 +1,23 @@
+{
+  "name": "pi-session-handoff",
+  "version": "1.0.0",
+  "description": "Pi 的 session 交接與記憶分層 bundle：開工注入 HANDOFF、收尾擋一次提醒、壓縮與退場前備份，附 /wrap、/retro、/memory-defrag 指令與 session-handoff 技能。",
+  "keywords": ["pi-package", "pi-extension", "pi-skill", "pi-prompt", "handoff", "session"],
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "package.json",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "extensions",
+    "prompts",
+    "skills"
+  ],
+  "pi": {
+    "extensions": ["./extensions/session-handoff.ts"],
+    "skills": ["./skills"],
+    "prompts": ["./prompts/*.md"]
+  }
+}
