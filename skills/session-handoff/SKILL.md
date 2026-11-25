@@ -55,17 +55,29 @@ description: Session 開工／收尾協定：交接檔（預設 docs/HANDOFF.md�
 ## 設定（`.pi/handoff.json`）
 
 `handoffPath`、`staleMinutes`（預設 120）、`maxInjectChars`（8000）、`keepSnapshots`（30）、
-`nagOnSettle`（true＝真的要求續跑一次；false＝只印提醒）、`injectOnStart`、
+`nagMode`（`advisory`／`block`＝要求續跑一次，`off`＝只印提醒；舊鍵 `nagOnSettle`
+布林仍相容，`nagMode` 存在時優先）、`injectOnStart`、
 `snapshotOnCompact`、`snapshotOnShutdown`、`verifyCommand`（寫進提醒與 status）、
 `protocolDoc`、`ignorePrefixes`（髒檔檢查額外忽略）。
-環境變數 `PI_HANDOFF_*` 優先級最高；改完跑 `/handoff-reload`。
+環境變數 `PI_HANDOFF_*`（含 omp 版的 `OMP_HANDOFF_NAG`）優先級最高；改完跑 `/handoff-reload`。
+長跑素材生成／QA 採證的專案建議把 `staleMinutes` 從 120 拉到 240，否則正常施工中就會誤報。
+**與 omp 並行的專案**：鍵名與 `omp-session-handoff` 一致，`.pi/handoff.json` 與
+`.omp/handoff.json` 可複製貼上（omp 独有的 `knowledge`、`exitConfirm` 在 Pi 端被忽略），
+改一份就改另一份，兩邊各跑一次 `/handoff-status` 覆核門檻。
 
-## 四個坑
+## 七個坑
 
 - **退場時不準叫模型寫交接**：`session_shutdown` 只做檔案備份；要寫交接請在結束前跑 `/wrap`。
 - **`agent_before_settle` 回傳 `continue: true` 會真的多跑一輪**：每個 session 只提出一次，
-  而且要「有髒檔」與「交接檔逾時」同時成立才觸發；嫌煩就把 `nagOnSettle` 改成 `false`
-  或拉高 `staleMinutes`。
-- **重複注入**：`/reload`、`/resume` 不會重複注入——會比對分支上既有注入訊息的時間戳與交接檔 mtime。
+  而且要「有髒檔」與「交接檔逾時」同時成立才觸發；嫌煩就把 `nagMode` 改成 `"off"`
+  （只印提醒）或拉高 `staleMinutes`。
+- **重複注入有三種來源**：(1) `/reload`、`/resume` 不會重複——會比對分支上既有注入訊息的
+  時間戳與交接檔 mtime；(2) **同一 harness 載入兩份實作**（user 層 `pi install` 之外又在專案
+  `.pi/extensions/` 放一份）會各注入一次、各擋一次，一個 harness 只準一份；
+  (3) **中途改擴充檔**觸發熱重載，per-session 旗標歸零，同 session 會再注入一次、settle
+  再擋一次（實測）。收尾前別改 hook 檔；看到了認得出來就好。
+- **指令沒反應、模型開始自由回答**：通常是**專案未信任**，Pi 不載入擴充，slash 指令淪為
+  一般文字丟給模型（實測 `/handoff-status` 回的是模型編的排查步驟）。先加 `--approve`
+  跑一次或把專案加入信任清單，再來查 bundle 有沒有裝錯層級。
 - **快照目錄不要入版控**：`.pi/transcripts/`、`.pi/handoff-history/` 要留在 `.gitignore`
   （`/handoff-init` 會自動補），否則每輪 session 都會產生髒檔、讓收尾檢查失準。

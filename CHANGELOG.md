@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.1.0 - 2026-11-25
+
+來自 taiwan-homm3-like 的第二輪：同一倉庫由 pi 與 omp 兩個 agent 並行時，
+兩套 bundle 的設定鍵名不同（`nagOnSettle` 布林 vs `nagMode` 三態），
+同一份門檻要寫兩種格式，結果一邊永遠過舊、另一邊從不提醒。
+
+- `nagMode`（`advisory`／`block`／`off`）成為正式鍵，**與 omp 版同名同義**；
+  舊鍵 `nagOnSettle`（布林）繼續相容，`nagMode` 存在時優先。
+- 環境變數多接受 `OMP_HANDOFF_NAG`，讓兩個 harness 一起降層。
+- `/handoff-status` 顯示 `nag=<mode>`；`/handoff-init` 的種子設定改寫 `nagMode`。
+- README／技能補兩條實測坑：同一 harness 載入兩份實作會重複注入與重複攔阻；
+  中途改擴充檔觸發熱重載，會讓 per-session 旗標歸零而再注入一次。
+- 行為測項 23 → 26（新增 `nagMode` 三態與優先序）。
+- 文件補記兩個環境坑：同一 harness 載入兩份實作會重複注入／重複攔阻；專案未信任時
+  Pi 不載入擴充，slash 指令會變成模型自由回答（不是 bundle 壞掉）。
+
 ## 1.0.0 - 2026-11-25
 
 首版：把 taiwan-homm3-like 專案內驗證過的 session 交接協定抽成通用 bundle。

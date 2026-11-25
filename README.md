@@ -71,7 +71,7 @@ cd /path/to/project && pi install /Users/johnchen/AICode/pi-session-handoff -l
 | `staleMinutes` | `120` | 超過即視為過舊 |
 | `maxInjectChars` | `8000` | 注入 context 的上限 |
 | `keepSnapshots` | `30` | 兩種快照各保留幾份 |
-| `nagOnSettle` | `true` | `false` 時只印提醒，不要求續跑 |
+| `nagMode` | `"advisory"` | `advisory`／`block`＝要求續跑一次（Pi 無硬擋形態，兩者同行為）；`off`＝只印提醒。舊鍵 `nagOnSettle`（布林）仍相容，`nagMode` 存在時優先 |
 | `injectOnStart` | `true` | 是否注入交接內容 |
 | `snapshotOnCompact` | `true` | 壓縮前備份 |
 | `snapshotOnShutdown` | `true` | 退場前備份 |
@@ -80,19 +80,32 @@ cd /path/to/project && pi install /Users/johnchen/AICode/pi-session-handoff -l
 | `ignorePrefixes` | `[]` | 髒檔檢查額外忽略的前綴 |
 
 髒檔檢查一律排除 `.pi/`、`.agents/` 與交接檔本身；不是 git repo 時自動跳過檢查。
+`PI_HANDOFF_NAG` 之外也接受 omp 版的 `OMP_HANDOFF_NAG`，方便兩個 harness 一起降層。
+
+**跨 harness 並行的專案**（同一 repo 同時用 pi 與 omp）：本 bundle 的鍵名與
+`omp-session-handoff` 的 `.omp/handoff.json` **故意一致**，兩份檔可以複製貼上；
+omp 独有的 `knowledge`、`exitConfirm` 本 bundle 會忽略。每個 harness 只準載入
+**一份**實作（見下方的注意）。
 
 ## 注意
 
 - 退場 hook **只做檔案備份**，不會叫模型寫交接；交接一律在結束前用 `/wrap`。
 - `agent_before_settle` 的攔阻會讓 agent 多跑一輪，每個 session 最多一次。
 - 快照目錄務必留在 `.gitignore`，否則每輪 session 都產生髒檔、讓收尾檢查失準。
+- **同一個 harness 只準載入一份實作**：user 層 `pi install` 之外又在專案 `.pi/extensions/`
+  放一份，會各注入一次交接、各擋一次收尾（實測過）。
+- **中途改擴充檔會再注入一次**：Pi 熱重載擴充時 per-session 旗標歸零，同一 session
+  會再注入一份交接、settle 也再擋一次。不是 bug；收尾前別改 hook 檔。
+- **指令沒執行、模型開始自由回答** → 通常是**專案尚未信任**（未信任時 Pi 不載入擴充，
+  slash 指令就變成一般文字丟給模型）。加 `--approve` 跑一次，或先在本專案信任 Pi。
+  實測：`/handoff-status` 在未信任的 `/tmp` 專案回的是模型編的排查步驟，不是指令輸出。
 - 卸載：`pi remove /Users/johnchen/AICode/pi-session-handoff`（`-l` 卸專案層級）。
   已建立的 `docs/HANDOFF.md`、`AGENTS.md` 段落不會被自動移除。
 
 ## 開發與驗證
 
 ```sh
-node test/behaviour.cjs   # 23 項行為測試（jiti＋mock context，不打模型、不碰你的 repo）
+node test/behaviour.cjs   # 26 項行為測試（jiti＋mock context，不打模型、不碰你的 repo）
 
 # 端到端：找個暫存專案真的安裝並跑指令
 mkdir -p /tmp/x && cd /tmp/x && git init -q .
@@ -103,7 +116,8 @@ pi --approve --no-session --no-tools -p "/handoff-status"
 
 行為測試涵蓋：註冊 5 事件／4 指令；注入每 session 僅 1 次；`/resume`、`/reload`
 不重複注入；`messageType: "custom"` 不注入；逾時＋髒檔才擋且僅擋 1 次；
-`nagOnSettle: false` 只印提醒；只有 `.pi/`、`.agents/`、交接檔髒時不觸發；
+`nagOnSettle: false` 與 `nagMode: "off"` 都只印提醒、`nagMode` 蓋舊鍵；
+只有 `.pi/`、`.agents/`、交接檔髒時不觸發；
 非 git repo 不檢查；壓縮與退場各備一份；`/handoff-init` 冪等。
 
 授權：MIT。
