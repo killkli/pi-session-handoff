@@ -1,5 +1,5 @@
 ---
-description: 經驗萃取：回顧本 session 實際遇到的阻礙，提出改善下次工作環境（AGENTS.md／檢查／hook）的建議
+description: 經驗萃取：回顧本 session 實際遇到的阻礙，提出改善下次工作環境（AGENTS.md／檢查）的建議
 argument-hint: "[聚焦範圍]"
 ---
 回顧這個 session，找出讓工作變慢或讓你走錯方向的地方，提出「改善下次工作環境」的建議。
@@ -18,8 +18,8 @@ argument-hint: "[聚焦範圍]"
 3. **不明顯的知識**：環境怪癖、隱性相依、必須照順序做的步驟 → 寫進離相關程式碼最近的
    `AGENTS.md`；跨模組的慣例才留在根目錄那份。
 4. **過期或無效的指示**：`AGENTS.md` 裡哪一條錯了、或從頭到尾沒用到 → 建議刪除或修正。
-5. **交接協定本身**：注入太吵、門檻太鬆太緊、段落不合用 → 改 `.pi/handoff.json`
-   （`staleMinutes`、`nagOnSettle`、`handoffPath`、`verifyCommand`），不要改碼。
+5. **交接協定本身**：交接路徑、過舊門檻或段落不合用 → 建議調整
+   `.pi/handoff.json`（`staleMinutes`、`handoffPath`、`verifyCommand`）或交接範本。
 
 聚焦範圍：${@:-整個 session 的所有工作}
 
