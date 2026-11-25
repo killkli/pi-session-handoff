@@ -46,6 +46,7 @@ description: Session 開工／收尾協定：交接檔（預設 docs/HANDOFF.md�
 | --- | --- | --- | --- |
 | 開工注入交接 | `SessionStart` | `before_agent_start` | 每個 session 注入一次交接檔（上限 `maxInjectChars`） |
 | 收尾提醒 | `Stop` | `agent_before_settle` | 有未 commit 異動且交接檔逾時 → 擋一次 |
+| 中途自動交接 | — | `turn_end`／`agent_settled` | 50% 標記，等作業結束後寫交接、壓縮並自動接續；不取代 `/wrap` |
 | 壓縮前備份 | `PreCompact` | `session_before_compact` | 備份 transcript＋交接快照，不取消壓縮 |
 | 退場備份 | `SessionEnd` | `session_shutdown` | 同上（涵蓋 quit/new/resume/fork/reload） |
 
@@ -57,13 +58,15 @@ description: Session 開工／收尾協定：交接檔（預設 docs/HANDOFF.md�
 `handoffPath`、`staleMinutes`（預設 120）、`maxInjectChars`（8000）、`keepSnapshots`（30）、
 `nagMode`（`advisory`／`block`＝要求續跑一次，`off`＝只印提醒；舊鍵 `nagOnSettle`
 布林仍相容，`nagMode` 存在時優先）、`injectOnStart`、
-`snapshotOnCompact`、`snapshotOnShutdown`、`verifyCommand`（寫進提醒與 status）、
-`protocolDoc`、`ignorePrefixes`（髒檔檢查額外忽略）。
+`autoHandoffCompact`（預設 `true`，50% 門檻）、`snapshotOnCompact`、`snapshotOnShutdown`、
+`verifyCommand`（寫進提醒與 status）、`protocolDoc`、`ignorePrefixes`（髒檔檢查額外忽略）。
 環境變數 `PI_HANDOFF_*`（含 omp 版的 `OMP_HANDOFF_NAG`）優先級最高；改完跑 `/handoff-reload`。
 長跑素材生成／QA 採證的專案建議把 `staleMinutes` 從 120 拉到 240，否則正常施工中就會誤報。
-**與 omp 並行的專案**：鍵名與 `omp-session-handoff` 一致，`.pi/handoff.json` 與
-`.omp/handoff.json` 可複製貼上（omp 独有的 `knowledge`、`exitConfirm` 在 Pi 端被忽略），
-改一份就改另一份，兩邊各跑一次 `/handoff-status` 覆核門檻。
+Pi 原生自動壓縮以模型的 `contextWindow × 0.2` 設定 `compaction.modelOverrides` 的
+`reserveTokens`，可約在 80% 觸發；設定與重啟方式見 README。此 extension 不修改 Pi 設定；
+原生壓縮可能在長作業中先觸發，且 Pi 的閒置檢查與壓縮並非原子操作。
+**與 omp 並行的專案**：共用設定鍵名一致；`autoHandoffCompact` 僅供 Pi bundle 使用，
+omp 獨有的 `knowledge`、`exitConfirm` 在 Pi 端被忽略。
 
 ## 七個坑
 

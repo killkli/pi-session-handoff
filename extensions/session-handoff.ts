@@ -17,6 +17,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -27,6 +28,8 @@ import {
 
 const CONTEXT_TYPE = "session-handoff-context";
 const GUARD_TYPE = "session-handoff-guard";
+const AUTO_WRITE_TYPE = "session-handoff-auto-write";
+const AUTO_RESUME_TYPE = "session-handoff-auto-resume";
 const GITIGNORE_MARK = "# pi-session-handoff（本機產物，勿入版控）";
 
 /**
@@ -45,6 +48,7 @@ type HandoffConfig = {
   injectOnStart: boolean;
   snapshotOnCompact: boolean;
   snapshotOnShutdown: boolean;
+  autoHandoffCompact: boolean; // turn 達 50% 後，等作業自然結束再交接並壓縮
   verifyCommand: string; // 提醒與 status 顯示的驗證指令
   protocolDoc: string; // 協定文件位置，例：AGENTS.md §4
   ignorePrefixes: string[]; // 髒檔檢查額外忽略的路徑前綴
@@ -59,6 +63,7 @@ const DEFAULTS: HandoffConfig = {
   injectOnStart: true,
   snapshotOnCompact: true,
   snapshotOnShutdown: true,
+  autoHandoffCompact: true,
   verifyCommand: "",
   protocolDoc: "",
   ignorePrefixes: [],
@@ -114,6 +119,7 @@ function buildConfig(cwd: string): ConfigCache {
           injectOnStart: asBool(parsed.injectOnStart, value.injectOnStart),
           snapshotOnCompact: asBool(parsed.snapshotOnCompact, value.snapshotOnCompact),
           snapshotOnShutdown: asBool(parsed.snapshotOnShutdown, value.snapshotOnShutdown),
+          autoHandoffCompact: asBool(parsed.autoHandoffCompact, value.autoHandoffCompact),
           ...(typeof parsed.verifyCommand === "string" ? { verifyCommand: parsed.verifyCommand } : {}),
           ...(typeof parsed.protocolDoc === "string" ? { protocolDoc: parsed.protocolDoc } : {}),
           ...(Array.isArray(parsed.ignorePrefixes)
@@ -138,6 +144,9 @@ function buildConfig(cwd: string): ConfigCache {
   if (env.OMP_HANDOFF_NAG) value.nagMode = asNagMode(env.OMP_HANDOFF_NAG, value.nagMode); // 跨 harness 一起覆寫
   if (env.PI_HANDOFF_VERIFY_COMMAND) value.verifyCommand = env.PI_HANDOFF_VERIFY_COMMAND;
   if (env.PI_HANDOFF_PROTOCOL_DOC) value.protocolDoc = env.PI_HANDOFF_PROTOCOL_DOC;
+  if (env.PI_HANDOFF_AUTO_COMPACT !== undefined) {
+    value.autoHandoffCompact = asBool(env.PI_HANDOFF_AUTO_COMPACT, value.autoHandoffCompact);
+  }
 
   return { cwd, source, mtimeMs, value };
 }
@@ -322,6 +331,30 @@ function report(ctx: ExtensionContext, text: string): void {
   else console.log(text);
 }
 
+/** JSON/RPC 模式的 stdout 是協定串流。 */
+function autoReport(ctx: ExtensionContext, text: string, error = false): void {
+  if (ctx.hasUI) ctx.ui.notify(text, error ? "error" : "warning");
+  else console.error(text);
+}
+
+function validateAutoHandoff(file: string): string {
+  const stat = fs.lstatSync(file);
+  if (!stat.isFile() || stat.size > 128 * 1024) throw new Error("暫存交接檔不是一般檔案或過大");
+  const text = fs.readFileSync(file, "utf8");
+  const lines = text.replace(/\r\n/g, "\n").replace(/\n$/, "").split("\n");
+  if (lines.length > 80) throw new Error("暫存交接檔超過 80 行");
+  const headings = lines.flatMap((line, i) => /^##\s+/.test(line) ? [i] : []);
+  const names = ["目標", "本次完成", "進行中", "下一步", "已決定的事與理由", "死路", "待我確認", "驗證狀態"];
+  if (headings.length !== names.length || headings.some((line, i) => {
+    const heading = lines[line].replace(/^##\s+/, "").trim();
+    return !(heading === names[i] || heading.startsWith(`${names[i]}（`) || heading.startsWith(`${names[i]}(`));
+  })) throw new Error("暫存交接檔必須依序包含八個指定段落");
+  if (headings.some((line, i) => !lines.slice(line + 1, headings[i + 1] ?? lines.length).some((s) => s.trim()))) {
+    throw new Error("暫存交接檔有空段落");
+  }
+  return text;
+}
+
 function statusText(ctx: ExtensionContext, cfg: HandoffConfig, info: HandoffInfo): string {
   if (!info.exists) return `HANDOFF ⚠ 不存在（先跑 /handoff-init，收尾跑 /wrap）`;
   const flag = info.stale ? "⚠ 過舊" : "ok";
@@ -379,6 +412,7 @@ export function seedConfig(): string {
       injectOnStart: DEFAULTS.injectOnStart,
       snapshotOnCompact: DEFAULTS.snapshotOnCompact,
       snapshotOnShutdown: DEFAULTS.snapshotOnShutdown,
+      autoHandoffCompact: DEFAULTS.autoHandoffCompact,
       verifyCommand: "",
       protocolDoc: "",
       ignorePrefixes: [],
@@ -414,7 +448,203 @@ export default function (pi: ExtensionAPI) {
   let injectedThisSession = false;
   let naggedThisSession = false;
 
+  // Pi 的 ctx.compact() 內部先 abort；idle 與 compact 不是原子操作。
+  type AutoRun = {
+    stage: "writing" | "compacting" | "resuming";
+    session: string;
+    leaf: string | null;
+    file: string;
+    temp: string;
+    original: string | null;
+    started: boolean;
+    completed: boolean;
+    interrupted: boolean;
+    compactLeaf?: string | null;
+  };
+  let auto: AutoRun | undefined;
+  let pending: { session: string; compactId: string | undefined } | undefined;
+  let blocked = false;
+  let warnedSettings = "";
+
+  const clean = (run: AutoRun | undefined) => {
+    if (!run) return;
+    try { fs.unlinkSync(run.temp); } catch { /* 尚未建立或已移走 */ }
+  };
+  const fileVersion = (file: string): string | null => {
+    try {
+      const stat = fs.lstatSync(file);
+      return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+  };
+  const fail = (ctx: ExtensionContext, text: string) => {
+    clean(auto);
+    auto = undefined;
+    pending = undefined;
+    blocked = true;
+    autoReport(ctx, `自動交接／壓縮停止：${text}`, true);
+  };
+  const enabled = (ctx: ExtensionContext) =>
+    getConfig(ctx).autoHandoffCompact && pi.getSettings().compaction?.enabled !== false;
+  const compactId = (ctx: ExtensionContext) =>
+    [...ctx.sessionManager.getBranch()].reverse().find((entry) => entry.type === "compaction")?.id;
+  const quiet = (ctx: ExtensionContext) => ctx.isIdle() && !ctx.hasPendingMessages();
+  const sameSession = (ctx: ExtensionContext, run: AutoRun) =>
+    ctx.sessionManager.getSessionId() === run.session;
+  const unchangedBranch = (ctx: ExtensionContext, run: AutoRun) => {
+    if (!sameSession(ctx, run)) return false;
+    const branch = ctx.sessionManager.getBranch();
+    const index = run.leaf === null ? -1 : branch.findIndex((entry) => entry.id === run.leaf);
+    if (run.leaf !== null && index < 0) return false;
+    return !branch.slice(index + 1).some((entry) =>
+      entry.type === "compaction" ||
+      (entry.type === "message" && entry.message.role === "user") ||
+      (entry.type === "custom_message" && entry.customType !== AUTO_WRITE_TYPE));
+  };
+
+  const warnNativeThreshold = (ctx: ExtensionContext, window: number) => {
+    const model = ctx.model;
+    if (!model) return;
+    const config = pi.getSettings().compaction;
+    const key = `${model.provider}/${model.id}`;
+    const reserve = config?.modelOverrides?.[key]?.reserveTokens ?? config?.reserveTokens ?? 16384;
+    if (!Number.isSafeInteger(reserve) || reserve < 0) return;
+    const threshold = 100 * (1 - reserve / window);
+    const signature = `${key}:${window}:${reserve}`;
+    if ((threshold < 79 || threshold > 81) && warnedSettings !== signature) {
+      warnedSettings = signature;
+      autoReport(ctx, `Pi 原生壓縮對 ${key} 的理論門檻約 ${threshold.toFixed(1)}%（reserveTokens=${reserve}），並非約 80%。若要約 80%，請在 Pi settings 的 compaction.modelOverrides[${JSON.stringify(key)}].reserveTokens 設為 ${Math.round(window * 0.2)}；這是模型相關的固定 token 數，需隨模型／視窗調整。`);
+    }
+  };
+
+  pi.on("turn_end", async (event, ctx) => {
+    if (auto) {
+      if (auto.stage === "writing") {
+        auto.completed = event.outcome === "completed" &&
+          event.message.role === "assistant" && event.message.stopReason === "stop";
+      }
+      return;
+    }
+    if (event.outcome !== "completed") {
+      pending = undefined;
+      blocked = true;
+      return;
+    }
+    if (blocked || !enabled(ctx)) return;
+    const usage = ctx.getContextUsage();
+    if (!usage || usage.tokens === null || !Number.isFinite(usage.tokens) ||
+        !Number.isFinite(usage.contextWindow) || usage.contextWindow <= 0) return;
+    warnNativeThreshold(ctx, usage.contextWindow);
+    if (usage.tokens / usage.contextWindow >= 0.5 && event.outcome === "completed") {
+      pending = { session: ctx.sessionManager.getSessionId(), compactId: compactId(ctx) };
+    }
+  });
+
+  pi.on("agent_settled", async (event, ctx) => {
+    if (event.aborted) {
+      if (auto) fail(ctx, "使用者取消作業，不自動續作");
+      else { pending = undefined; blocked = true; }
+      return;
+    }
+    if (auto?.stage === "resuming") {
+      auto = undefined;
+      return;
+    }
+    if (auto?.stage === "compacting") return;
+    if (auto?.stage === "writing") {
+      const run = auto;
+      if (!enabled(ctx) || run.interrupted || !run.started || !run.completed ||
+          !quiet(ctx) || !unchangedBranch(ctx, run)) {
+        fail(ctx, "交接期間狀態變更、訊息待處理，或交接 turn 未成功完成");
+        return;
+      }
+      let handoff: string;
+      try {
+        handoff = validateAutoHandoff(run.temp);
+        if (fileVersion(run.file) !== run.original) throw new Error("原交接檔在產生期間已變更");
+        fs.renameSync(run.temp, run.file);
+      } catch (error) {
+        fail(ctx, `交接檔驗證或原子替換失敗：${String(error)}`);
+        return;
+      }
+      if (!enabled(ctx) || !quiet(ctx) || !unchangedBranch(ctx, run)) {
+        fail(ctx, "壓縮前 session 或佇列已變更");
+        return;
+      }
+      run.stage = "compacting";
+      run.compactLeaf = ctx.sessionManager.getLeafId();
+      try {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        ctx.compact({
+          customInstructions: `這次壓縮後必須能繼續原任務。保留使用者目標、限制、已完成與未完成事項、具體下一步、決策、失敗嘗試、驗證結果與已完成的副作用，並在摘要中指向交接檔 ${JSON.stringify(run.file)}。\n以下是剛完成的交接：\n\n${handoff}`,
+          onComplete: () => {
+            try {
+              if (auto !== run) return;
+              if (!enabled(ctx) || run.interrupted || !sameSession(ctx, run) || !quiet(ctx)) {
+                fail(ctx, "壓縮後狀態變更，不自動續作");
+                return;
+              }
+              const branch = ctx.sessionManager.getBranch();
+              const index = run.compactLeaf === null ? -1 : branch.findIndex((entry) => entry.id === run.compactLeaf);
+              const tail = branch.slice(index + 1);
+              if ((run.compactLeaf !== null && index < 0) || tail.length !== 1 || tail[0].type !== "compaction") {
+                fail(ctx, "壓縮後分支已變更，不自動續作");
+                return;
+              }
+              run.stage = "resuming";
+              pi.sendMessage({
+                customType: AUTO_RESUME_TYPE,
+                content: `上下文已壓縮。請讀取 ${JSON.stringify(run.file)} 的交接，依原任務繼續；核對目前狀態，切勿重複已完成的副作用。若原任務已完成則正常回報，不要重新執行。`,
+                display: true,
+              }, { triggerTurn: true, deliverAs: "followUp" });
+            } finally {
+              resolve();
+            }
+          },
+          onError: (error) => {
+            try { if (auto === run) fail(ctx, `壓縮失敗：${error.message}`); }
+            finally { resolve(); }
+          },
+        });
+        await promise;
+      } catch (error) {
+        fail(ctx, `無法啟動壓縮：${String(error)}`);
+      }
+      return;
+    }
+    if (!pending) return;
+    const marked = pending;
+    pending = undefined;
+    if (blocked || !enabled(ctx) || !quiet(ctx) ||
+        ctx.sessionManager.getSessionId() !== marked.session || compactId(ctx) !== marked.compactId) return;
+    const file = handoffInfo(ctx, getConfig(ctx)).file;
+    const temp = path.join(path.dirname(file), `.${path.basename(file)}.${randomUUID()}.tmp`);
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      auto = { stage: "writing", session: marked.session, leaf: ctx.sessionManager.getLeafId(),
+        file, temp, original: fileVersion(file), started: false, completed: false, interrupted: false };
+      pi.sendMessage({
+        customType: AUTO_WRITE_TYPE,
+        content: `【自動交接】原作業已自然停下。只整理目前工作狀態，不要繼續原任務、不要執行驗證或提交。請將完整交接寫到以下獨立暫存檔，絕不可修改原交接檔，寫完即停止。\n暫存檔：${JSON.stringify(temp)}\n格式：總長不超過 80 行，依序用二級標題「目標」「本次完成」「進行中（未完成）」「下一步（依優先序）」「已決定的事與理由」「死路（試過不行的）」「待我確認」「驗證狀態」；每段都要有內容，無則寫「無」。明確記錄原任務、已完成的副作用、下一步及實際驗證狀態，避免續作時重複執行。`,
+        display: true,
+      }, { triggerTurn: true, deliverAs: "followUp" });
+    } catch (error) {
+      fail(ctx, `無法啟動交接：${String(error)}`);
+    }
+  });
+
+  pi.on("input", async () => {
+    if (auto) auto.interrupted = true;
+  });
+
   pi.on("session_start", async (_event, ctx) => {
+    clean(auto);
+    auto = undefined;
+    pending = undefined;
+    blocked = false;
+    warnedSettings = "";
     injectedThisSession = false;
     naggedThisSession = false;
     if (!ctx.hasUI) return;
@@ -424,6 +654,15 @@ export default function (pi: ExtensionAPI) {
 
   // 開工注入（SessionStart 對應）：本 session 第一則使用者提示前注入交接內容
   pi.on("before_agent_start", async (event, ctx) => {
+    if (event.messageType === "user") {
+      if (auto) auto.interrupted = true;
+      blocked = false;
+    } else if (auto?.stage === "writing" && event.message.customType === AUTO_WRITE_TYPE) {
+      auto.started = sameSession(ctx, auto) && !auto.interrupted && !ctx.hasPendingMessages() &&
+        ctx.sessionManager.getLeafId() === auto.leaf;
+    } else if (auto && !(auto.stage === "resuming" && event.message.customType === AUTO_RESUME_TYPE)) {
+      auto.interrupted = true;
+    }
     const cfg = getConfig(ctx);
     if (injectedThisSession || !cfg.injectOnStart) return;
     if (event.messageType !== "user") return;
@@ -454,6 +693,7 @@ export default function (pi: ExtensionAPI) {
 
   // 收尾檢查（Stop 對應）：有未 commit 異動、交接檔卻過舊或不存在 → 擋一次
   pi.on("agent_before_settle", async (event, ctx) => {
+    if (auto) return;
     const cfg = getConfig(ctx);
     if (naggedThisSession) return;
     const info = handoffInfo(ctx, cfg);
@@ -486,6 +726,10 @@ export default function (pi: ExtensionAPI) {
 
   // 壓縮前備份（PreCompact 對應）：只備份，不取消壓縮
   pi.on("session_before_compact", async (event, ctx) => {
+    pending = undefined;
+    if (auto && (auto.stage !== "compacting" || event.reason !== "manual")) {
+      auto.interrupted = true;
+    }
     const cfg = getConfig(ctx);
     if (!cfg.snapshotOnCompact) return undefined;
     try {
@@ -499,8 +743,16 @@ export default function (pi: ExtensionAPI) {
     return undefined;
   });
 
+  pi.on("session_compact", async () => {
+    pending = undefined;
+    if (auto && auto.stage !== "compacting") auto.interrupted = true;
+  });
+
   // 退場備份（SessionEnd 對應）
   pi.on("session_shutdown", async (event, ctx) => {
+    clean(auto);
+    auto = undefined;
+    pending = undefined;
     const cfg = getConfig(ctx);
     if (cfg.snapshotOnShutdown) {
       try {

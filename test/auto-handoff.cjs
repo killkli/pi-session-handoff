@@ -49,6 +49,8 @@ function fixture(t, { bundle = {}, settings = {}, hasUI = true } = {}) {
   const events = new Map(), actions = [], notifications = [], branch = [];
   const state = { idle: true, pending: false, session: "session-1", usage: { tokens: 499, contextWindow: 1000, percent: 49.9 } };
   let id = 0;
+  let pendingSettlement;
+  let settlementFinished = false;
   function append(entry) {
     const parentId = branch.at(-1)?.id ?? null;
     const complete = { id: String(++id), parentId, timestamp: new Date().toISOString(), ...entry };
@@ -156,7 +158,12 @@ function fixture(t, { bundle = {}, settings = {}, hasUI = true } = {}) {
       fs.writeFileSync(temp, content);
     }
     await turn();
-    await settled();
+    const settlement = settled();
+    settlement.then(() => { settlementFinished = true; });
+    // Pi awaits agent_settled handlers: keep this turn open until compaction finishes.
+    await Promise.resolve();
+    if (compactSince()) pendingSettlement = settlement;
+    else await settlement;
   }
   async function completeCompact(compact, beforeCallback = () => {}) {
     await emit("session_before_compact", { reason: "manual", willRetry: false, preparation: {}, branchEntries: branch.slice(), signal: new AbortController().signal });
@@ -165,8 +172,9 @@ function fixture(t, { bundle = {}, settings = {}, hasUI = true } = {}) {
     await emit("session_compact", { reason: "manual", willRetry: false, fromExtension: false, compactionEntry });
     beforeCallback();
     compact.options.onComplete(result);
+    await pendingSettlement;
   }
-  return { root, file, ctx, state, actions, notifications, append, emit, turn, settled, userMessage, startUser, messagesSince, compactSince, startSentMessage, requestHandoff, modelFinished, completeCompact };
+  return { root, file, ctx, state, actions, notifications, append, emit, turn, settled, userMessage, startUser, messagesSince, compactSince, startSentMessage, requestHandoff, modelFinished, completeCompact, finishPending: () => pendingSettlement, settlementFinished: () => settlementFinished };
 }
 
 test("threshold is checked during turns, but an active tool turn is never interrupted", async (t) => {
@@ -208,11 +216,13 @@ test("valid handoff is installed before compact, then resumes in the same sessio
   await f.modelFinished(temp);
   const compact = f.compactSince(beforeCompaction);
   assert.ok(compact, "compact only after the handoff turn settles");
+  assert.equal(f.settlementFinished(), false, "settlement must remain open until compression completes");
   assert.equal(fs.readFileSync(f.file, "utf8"), handoff);
   assert.equal(fs.existsSync(temp), false, "atomic installation consumes the temporary file");
   assert.deepEqual(f.messagesSince(beforeCompaction), [], "resume must wait for the compact callback");
   const beforeResume = f.actions.length;
   await f.completeCompact(compact);
+  assert.equal(f.settlementFinished(), true);
   const resume = f.messagesSince(beforeResume).find((action) => action.options?.triggerTurn);
   assert.ok(resume, "successful compact starts continuation");
   assert.equal(resume.options.deliverAs, "followUp");
@@ -320,6 +330,7 @@ test("cancellation and compaction errors never restart the task", async (t) => {
     assert.ok(compact);
     const before = f.actions.length;
     compact.options.onError(new Error("compaction failed"));
+    await f.finishPending();
     assert.deepEqual(f.messagesSince(before), []);
     assert.ok(f.notifications.some((note) => note.level === "error" || note.level === "warning"));
     await f.settled();

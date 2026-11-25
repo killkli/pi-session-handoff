@@ -1,5 +1,11 @@
 # Changelog
 
+## 未發行
+
+- 每個 turn 檢查目前 context 使用率；達 50% 時等待作業自然結束，再以八段交接、壓縮及續作。
+- 新增 `autoHandoffCompact` 與 `PI_HANDOFF_AUTO_COMPACT` 停用開關；保留手動壓縮與快照。
+- 說明 Pi 原生壓縮以 `reserveTokens` 依模型設定約 80%，以及競爭與原生先行壓縮的限制。
+
 ## 1.1.0 - 2026-11-25
 
 來自 taiwan-homm3-like 的第二輪：同一倉庫由 pi 與 omp 兩個 agent 並行時，
