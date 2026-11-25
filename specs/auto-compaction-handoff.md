@@ -23,6 +23,15 @@
 - 目前 `extensions/session-handoff.ts` 的 `session_before_compact` 只做 transcript 與現有 handoff 的快照，且備份失敗不阻擋壓縮。保留該行為；快照不是更新 handoff。若使用 Pi 內建壓縮與 custom instructions，確認指示確實進入摘要請求並保留既有摘要及檔案追蹤；若自訂摘要，必須同等保留這些語義。
 - 原本 `/wrap` prompt 是收尾用，會要求使用者確認下一步與考慮提交；自動流程不可直接照搬這些互動指示。新流程應重用格式與事實規則，不改變手動 `/wrap` 的契約。
 
+### Pi 1.6.0 的排程限制
+
+- `ctx.compact()` 使用手動壓縮路徑；`AgentSession.compact()` 先執行 `abort()`，會中止 agent、重試或進行中的壓縮。`turn_end` 不是安全呼叫點。
+- `agent_settled` 在 run 完全結束後觸發，但 `ctx.isIdle()` 與 `ctx.compact()` 不是原子操作；其他輸入或 extension 可能在其間啟動工作。不得將這組呼叫視為「絕不硬性中斷作業」的保證。
+- Pi 原生 threshold 壓縮可在工具批次完成後、同一 run 的下一個模型回應前執行；overflow 恢復亦早於 `agent_before_settle`。因此只在結算時準備交接，不能保證所有自動壓縮都先有新交接。
+- `agent_before_settle` 雖可提交 `compaction` draft，但此路徑不發出 `session_before_compact`／`session_compact`，會繞過既有快照及其他 extension 的壓縮事件，不能當成正常壓縮的等價替代品。
+
+要同時滿足不中斷、先交接、正常壓縮事件及自動續作，需要 Pi 核心提供原子式閒置壓縮排程及原生自動壓縮的安全協調機制。本 bundle 不能僅用現有 extension API 保證上述契約；不可修改安裝目錄內的 Pi 產物作為持久修正。以上依據 Pi 1.6.0 的 `dist/core/agent-session.js` 及 `docs/compaction.md`。
+
 ## 驗收
 
 使用隔離的暫存專案與可控 Pi context／模型；測試不需真實模型服務，並至少覆蓋：
