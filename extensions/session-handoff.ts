@@ -29,12 +29,19 @@ const CONTEXT_TYPE = "session-handoff-context";
 const GUARD_TYPE = "session-handoff-guard";
 const GITIGNORE_MARK = "# pi-session-handoff（本機產物，勿入版控）";
 
+/**
+ * 收尾提醒的三種形態，鍵名與 omp 版 bundle（omp-session-handoff）**故意保持一致**：
+ * 同一倉庫兩個 harness 並行時，兩份設定檔可以複製貼上而不用各自翻譯。
+ * Pi 沒有「硬擋不讓退場」的形態，所以 block 與 advisory 同行為。
+ */
+export type NagMode = "advisory" | "block" | "off";
+
 type HandoffConfig = {
   handoffPath: string; // 交接檔（相對專案根）
   staleMinutes: number; // 超過視為過舊
   maxInjectChars: number; // 注入上限
   keepSnapshots: number; // 每種快照保留幾份
-  nagOnSettle: boolean; // true = 要求續跑一次；false = 只印提醒
+  nagMode: NagMode; // advisory／block＝擋一次，off＝只印提醒（舊鍵 nagOnSettle 相容）
   injectOnStart: boolean;
   snapshotOnCompact: boolean;
   snapshotOnShutdown: boolean;
@@ -48,7 +55,7 @@ const DEFAULTS: HandoffConfig = {
   staleMinutes: 120,
   maxInjectChars: 8000,
   keepSnapshots: 30,
-  nagOnSettle: true,
+  nagMode: "advisory",
   injectOnStart: true,
   snapshotOnCompact: true,
   snapshotOnShutdown: true,
@@ -71,6 +78,19 @@ function asBool(value: unknown, fallback: boolean): boolean {
   return fallback;
 }
 
+/** nagMode 解析；同時相容舊鍵 nagOnSettle（true/false）與環境變數的 0/1。 */
+function asNagMode(value: unknown, fallback: NagMode): NagMode {
+  if (value === "advisory" || value === "block" || value === "off") return value;
+  if (typeof value === "boolean") return value ? "advisory" : "off";
+  if (typeof value === "string") {
+    const v = value.toLowerCase();
+    if (v === "advisory" || v === "block" || v === "off") return v as NagMode;
+    if (["0", "false", "no"].includes(v)) return "off";
+    if (["1", "true", "yes"].includes(v)) return "advisory";
+  }
+  return fallback;
+}
+
 /** 設定來源：預設值 ← <configDir>/handoff.json ← ./handoff.json ← PI_HANDOFF_* 環境變數。 */
 function buildConfig(cwd: string): ConfigCache {
   const candidates = [path.join(cwd, CONFIG_DIR_NAME, "handoff.json"), path.join(cwd, "handoff.json")];
@@ -89,7 +109,8 @@ function buildConfig(cwd: string): ConfigCache {
           staleMinutes: asNumber(parsed.staleMinutes, value.staleMinutes),
           maxInjectChars: asNumber(parsed.maxInjectChars, value.maxInjectChars),
           keepSnapshots: asNumber(parsed.keepSnapshots, value.keepSnapshots),
-          nagOnSettle: asBool(parsed.nagOnSettle, value.nagOnSettle),
+          // nagMode 為正式鍵；nagOnSettle 是舊鍵（bool），只在沒寫 nagMode 時生效
+          nagMode: asNagMode(parsed.nagMode ?? parsed.nagOnSettle, value.nagMode),
           injectOnStart: asBool(parsed.injectOnStart, value.injectOnStart),
           snapshotOnCompact: asBool(parsed.snapshotOnCompact, value.snapshotOnCompact),
           snapshotOnShutdown: asBool(parsed.snapshotOnShutdown, value.snapshotOnShutdown),
@@ -113,7 +134,8 @@ function buildConfig(cwd: string): ConfigCache {
   if (env.PI_HANDOFF_STALE_MINUTES) value.staleMinutes = asNumber(env.PI_HANDOFF_STALE_MINUTES, value.staleMinutes);
   if (env.PI_HANDOFF_MAX_INJECT_CHARS) value.maxInjectChars = asNumber(env.PI_HANDOFF_MAX_INJECT_CHARS, value.maxInjectChars);
   if (env.PI_HANDOFF_KEEP_SNAPSHOTS) value.keepSnapshots = asNumber(env.PI_HANDOFF_KEEP_SNAPSHOTS, value.keepSnapshots);
-  if (env.PI_HANDOFF_NAG) value.nagOnSettle = asBool(env.PI_HANDOFF_NAG, value.nagOnSettle);
+  if (env.PI_HANDOFF_NAG) value.nagMode = asNagMode(env.PI_HANDOFF_NAG, value.nagMode);
+  if (env.OMP_HANDOFF_NAG) value.nagMode = asNagMode(env.OMP_HANDOFF_NAG, value.nagMode); // 跨 harness 一起覆寫
   if (env.PI_HANDOFF_VERIFY_COMMAND) value.verifyCommand = env.PI_HANDOFF_VERIFY_COMMAND;
   if (env.PI_HANDOFF_PROTOCOL_DOC) value.protocolDoc = env.PI_HANDOFF_PROTOCOL_DOC;
 
@@ -353,7 +375,7 @@ export function seedConfig(): string {
       staleMinutes: DEFAULTS.staleMinutes,
       maxInjectChars: DEFAULTS.maxInjectChars,
       keepSnapshots: DEFAULTS.keepSnapshots,
-      nagOnSettle: DEFAULTS.nagOnSettle,
+      nagMode: DEFAULTS.nagMode,
       injectOnStart: DEFAULTS.injectOnStart,
       snapshotOnCompact: DEFAULTS.snapshotOnCompact,
       snapshotOnShutdown: DEFAULTS.snapshotOnShutdown,
@@ -448,7 +470,7 @@ export default function (pi: ExtensionAPI) {
       `• 收尾階段：用 /wrap 整份重寫交接檔${verify}後提交。\n` +
       `• 還在進行中：回一句「繼續中」即可（本 session 只提醒這一次）。`;
 
-    if (!cfg.nagOnSettle) {
+    if (cfg.nagMode === "off") {
       if (ctx.hasUI) ctx.ui.notify(note, "warning");
       return;
     }
@@ -584,7 +606,7 @@ export default function (pi: ExtensionAPI) {
             ? `狀態：${info.stale ? `過舊（門檻 ${cfg.staleMinutes} 分鐘）` : "fresh"}・更新於 ${ageText(info.ageMinutes)}前・${info.chars} bytes`
             : `狀態：不存在（跑 /handoff-init）`,
           `未 commit 異動（已排除 ${CONFIG_DIR_NAME}/、.agents/）：${dirtyLines(ctx, cfg).length} 筆`,
-          `設定來源：${configCache?.source ?? "預設值"}｜nag=${cfg.nagOnSettle}・注入=${cfg.injectOnStart}`,
+          `設定來源：${configCache?.source ?? "預設值"}｜nag=${cfg.nagMode}・注入=${cfg.injectOnStart}`,
           `驗證指令：${cfg.verifyCommand || "（未設定）"}`,
           next ? `下一步 1.：${next}` : "下一步：（未抓到，確認段落標題為「## 下一步」）",
         ].join("\n"),
