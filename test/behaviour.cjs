@@ -140,6 +140,23 @@ fs.writeFileSync(path.join(ROOT, "session.jsonl"), '{"type":"session","version":
   const r7 = await run6.events["agent_before_settle"][0]({ entries: [] }, s6.ctx);
   ok("同 session 只擋一次", !r7);
 
+  console.log("[4a] nagMode 鍵（與 omp 版同名）與舊鍵 nagOnSettle 的優先序");
+  fs.writeFileSync(path.join(REPO, ".pi/handoff.json"), JSON.stringify({ staleMinutes: 1, nagMode: "off", nagOnSettle: true }, null, 2));
+  const runN1 = load();
+  const sN1 = ctxFor({ hasUI: true });
+  r = await runN1.events["agent_before_settle"][0]({ entries: [] }, sN1.ctx);
+  ok("nagMode=off 蓋掉舊鍵 nagOnSettle=true → 只印提醒", !r && sN1.notes.some((n) => n.includes("交接檢查")), JSON.stringify(sN1.notes).slice(0, 140));
+
+  fs.writeFileSync(path.join(REPO, ".pi/handoff.json"), JSON.stringify({ staleMinutes: 1, nagMode: "advisory" }, null, 2));
+  const runN2 = load();
+  r = await runN2.events["agent_before_settle"][0]({ entries: [] }, ctxFor().ctx);
+  ok("nagMode=advisory → 擋一次", r && r.continue === true, JSON.stringify(r && r.continue));
+
+  fs.writeFileSync(path.join(REPO, ".pi/handoff.json"), JSON.stringify({ staleMinutes: 1, nagMode: "block" }, null, 2));
+  const runN3 = load();
+  r = await runN3.events["agent_before_settle"][0]({ entries: [] }, ctxFor().ctx);
+  ok("nagMode=block → Pi 沒有硬擋形態，依 advisory 擋一次", r && r.continue === true);
+
   console.log("[4b] 只有 .pi/、.agents/、交接檔本身髒 → 不擋");
   freshRepo();
   fs.mkdirSync(path.join(REPO, "docs"), { recursive: true });
