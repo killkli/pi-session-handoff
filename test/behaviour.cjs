@@ -27,16 +27,13 @@ function ok(label, cond, extra) {
 function load() {
   const events = {};
   const commands = {};
-  const pi = { on: (n, h) => { (events[n] ||= []).push(h); }, registerCommand: (n, o) => { commands[n] = o; } };
+  const messages = [];
+  const pi = { on: (n, h) => { (events[n] ||= []).push(h); }, registerCommand: (n, o) => { commands[n] = o; }, sendMessage: (message, options) => messages.push({ message, options }) };
   const mod = jiti(EXT, { force: true });
   (mod.default ? mod.default : mod)(pi);
-  return { events, commands, mod };
+  return { events, commands, messages, mod };
 }
 
-function mod2seed() {
-  const m = jiti(EXT, { force: true });
-  return m.seedHandoff();
-}
 
 function freshRepo() {
   fs.rmSync(REPO, { recursive: true, force: true });
@@ -74,11 +71,47 @@ fs.writeFileSync(path.join(ROOT, "session.jsonl"), '{"type":"session","version":
   freshRepo();
   let { events, commands, mod } = load();
   let { ctx, notes } = ctxFor();
-  ok("註冊 5 事件", ["session_start", "before_agent_start", "agent_before_settle", "session_before_compact", "session_shutdown"].every((e) => events[e]), Object.keys(events).join(","));
-  ok("註冊 4 指令", ["handoff-init", "handoff-status", "handoff-snapshot", "handoff-reload"].every((c) => commands[c]), Object.keys(commands).join(","));
+  ok("不註冊任何 session hook", Object.keys(events).length === 0, Object.keys(events).join(","));
+  ok("手動指令可用", ["handoff-init", "handoff-status", "handoff-read", "handoff-snapshot", "handoff-reload"].every((c) => commands[c]), Object.keys(commands).join(","));
 
-  let r = await events["agent_before_settle"][0]({ entries: [] }, ctx);
-  ok("髒檔為 0 → 不擋", !r);
+  console.log("[0a] 高用量不自動交接或壓縮");
+  const automaticActions = [];
+  const autoEvents = {};
+  const autoPi = {
+    on: (name, handler) => { (autoEvents[name] ||= []).push(handler); },
+    registerCommand: () => {},
+    getSettings: () => ({ compaction: { enabled: true } }),
+    sendMessage: (...args) => automaticActions.push(["message", ...args]),
+    sendUserMessage: (...args) => automaticActions.push(["userMessage", ...args]),
+  };
+  (mod.default ? mod.default : mod)(autoPi);
+  const autoCtx = ctxFor({
+    hasUI: true,
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    getContextUsage: () => ({ tokens: 900, contextWindow: 1000, percent: 90 }),
+    compact: () => automaticActions.push(["compact"]),
+    sessionManager: {
+      getSessionId: () => "test-session",
+      getSessionFile: () => path.join(ROOT, "session.jsonl"),
+      getBranch: () => [],
+      getLeafId: () => null,
+    },
+  }).ctx;
+  fs.mkdirSync(path.join(REPO, ".pi"), { recursive: true });
+  fs.writeFileSync(path.join(REPO, ".pi/handoff.json"), JSON.stringify({ autoHandoffCompact: true }));
+  const oldAutoEnv = process.env.PI_HANDOFF_AUTO_COMPACT;
+  process.env.PI_HANDOFF_AUTO_COMPACT = "true";
+  for (const handler of autoEvents.session_start || []) await handler({}, autoCtx);
+  for (const handler of autoEvents.turn_end || []) {
+    await handler({ outcome: "completed", message: { role: "assistant", stopReason: "stop" } }, autoCtx);
+  }
+  for (const handler of autoEvents.agent_settled || []) await handler({ aborted: false }, autoCtx);
+  if (oldAutoEnv === undefined) delete process.env.PI_HANDOFF_AUTO_COMPACT;
+  else process.env.PI_HANDOFF_AUTO_COMPACT = oldAutoEnv;
+  ok("高用量與舊啟用設定不觸發交接或壓縮", automaticActions.length === 0 && !fs.existsSync(HANDOFF));
+  fs.rmSync(path.join(REPO, ".pi"), { recursive: true, force: true });
+
 
   console.log("[1] /handoff-init 冪等");
   await commands["handoff-init"].handler("", ctx);
@@ -96,25 +129,19 @@ fs.writeFileSync(path.join(ROOT, "session.jsonl"), '{"type":"session","version":
   ok("agents 參數寫入協定段", agents.includes("<!-- BEGIN pi-session-handoff -->"));
   await commands["handoff-init"].handler("agents", ctx);
   ok("協定段不重複附加", fs.readFileSync(path.join(REPO, "AGENTS.md"), "utf8").split("BEGIN pi-session-handoff").length === 2);
+  const config = JSON.parse(fs.readFileSync(path.join(REPO, ".pi/handoff.json"), "utf8"));
+  ok("新設定不含自動事件選項", !("nagMode" in config) && !("injectOnStart" in config) && !("snapshotOnCompact" in config) && !("snapshotOnShutdown" in config));
+  ok("產生的協定要求手動讀取", agents.includes("/handoff-read") && !agents.includes("hook"));
 
-  console.log("[2] 注入");
+  console.log("[2] 手動讀取交接");
   const run2 = load();
-  const s2 = ctxFor();
-  r = await run2.events["before_agent_start"][0]({ messageType: "user", prompt: "hi" }, s2.ctx);
-  ok("第一則提示注入交接內容", r && r.message.content.includes("上次 session 交接"));
-  r = await run2.events["before_agent_start"][0]({ messageType: "user", prompt: "hi" }, s2.ctx);
-  ok("同 session 第二次不注入", !r);
-
-  const run3 = load();
-  const fresh = new Date(Date.now() + 5000).toISOString();
-  const s3 = ctxFor({ sessionManager: { getSessionFile: () => path.join(ROOT, "session.jsonl"), getBranch: () => [{ type: "custom_message", customType: "session-handoff-context", timestamp: fresh }] } });
-  r = await run3.events["before_agent_start"][0]({ messageType: "user", prompt: "hi" }, s3.ctx);
-  ok("resume/reload 已有注入 → 跳過", !r);
-
-  const run4 = load();
-  const s4 = ctxFor();
-  r = await run4.events["before_agent_start"][0]({ messageType: "custom", message: {} }, s4.ctx);
-  ok("messageType=custom → 不注入", !r);
+  await run2.commands["handoff-read"].handler("", ctx);
+  ok("手動讀取將交接內容提供給下一輪", run2.messages.length === 1 && run2.messages[0].message.content.includes(before.trim()) && run2.messages[0].options.deliverAs === "nextTurn");
+  ok("手動讀取不改寫交接檔", fs.readFileSync(HANDOFF, "utf8") === before);
+  const missing = load();
+  const missingCtx = ctxFor({ cwd: path.join(ROOT, "missing"), hasUI: true });
+  await missing.commands["handoff-read"].handler("", missingCtx.ctx);
+  ok("交接檔不存在時回報且不注入", missing.messages.length === 0 && missingCtx.notes.some((n) => n.includes("找不到交接檔")));
 
   console.log("[3] 設定覆蓋（.pi/handoff.json）");
   fs.mkdirSync(path.join(REPO, ".pi"), { recursive: true });
@@ -123,82 +150,30 @@ fs.writeFileSync(path.join(ROOT, "session.jsonl"), '{"type":"session","version":
   const s5 = ctxFor({ hasUI: true });
   await run5.commands["handoff-status"].handler("", s5.ctx);
   ok("status 讀到 verifyCommand 與設定來源", s5.notes.join("\n").includes("npm test") && s5.notes.join("\n").includes("handoff.json"), s5.notes.join("|"));
+  const custom = path.join(REPO, "custom.md");
+  fs.writeFileSync(custom, "自訂交接內容");
+  fs.writeFileSync(path.join(REPO, ".pi/handoff.json"), JSON.stringify({ handoffPath: "custom.md" }));
+  await run5.commands["handoff-reload"].handler("", s5.ctx);
+  await run5.commands["handoff-read"].handler("", s5.ctx);
+  ok("重載後手動讀取設定的交接檔", run5.messages.length === 1 && run5.messages[0].message.content.includes("自訂交接內容"));
+  fs.writeFileSync(custom, "");
+  await run5.commands["handoff-read"].handler("", s5.ctx);
+  ok("空交接檔不注入", run5.messages.length === 1 && s5.notes.some((n) => n.includes("為空或無法讀取")));
+  fs.writeFileSync(custom, "快照內容");
 
-  fs.utimesSync(HANDOFF, new Date(Date.now() - 5 * 60 * 1000), new Date(Date.now() - 5 * 60 * 1000));
-  fs.writeFileSync(path.join(REPO, "dirty.txt"), "x");
-  r = await run5.events["agent_before_settle"][0]({ entries: [] }, s5.ctx);
-  ok("nagOnSettle=false → 只印提醒不回傳", !r && s5.notes.some((n) => n.includes("交接檢查")), JSON.stringify(s5.notes).slice(0, 120));
-
-  console.log("[4] 預設 nagOnSettle=true → 擋一次");
-  fs.rmSync(path.join(REPO, ".pi/handoff.json"));
-  const veryOld = new Date(Date.now() - 3 * 3600 * 1000);
-  fs.utimesSync(HANDOFF, veryOld, veryOld);
-  const run6 = load();
-  const s6 = ctxFor();
-  r = await run6.events["agent_before_settle"][0]({ entries: [] }, s6.ctx);
-  ok("逾時＋髒檔 → 要求續跑一次", r && r.continue === true && r.entries.length === 1);
-  const r7 = await run6.events["agent_before_settle"][0]({ entries: [] }, s6.ctx);
-  ok("同 session 只擋一次", !r7);
-
-  console.log("[4a] nagMode 鍵（與 omp 版同名）與舊鍵 nagOnSettle 的優先序");
-  fs.writeFileSync(path.join(REPO, ".pi/handoff.json"), JSON.stringify({ staleMinutes: 1, nagMode: "off", nagOnSettle: true }, null, 2));
-  const runN1 = load();
-  const sN1 = ctxFor({ hasUI: true });
-  r = await runN1.events["agent_before_settle"][0]({ entries: [] }, sN1.ctx);
-  ok("nagMode=off 蓋掉舊鍵 nagOnSettle=true → 只印提醒", !r && sN1.notes.some((n) => n.includes("交接檢查")), JSON.stringify(sN1.notes).slice(0, 140));
-
-  fs.writeFileSync(path.join(REPO, ".pi/handoff.json"), JSON.stringify({ staleMinutes: 1, nagMode: "advisory" }, null, 2));
-  const runN2 = load();
-  r = await runN2.events["agent_before_settle"][0]({ entries: [] }, ctxFor().ctx);
-  ok("nagMode=advisory → 擋一次", r && r.continue === true, JSON.stringify(r && r.continue));
-
-  fs.writeFileSync(path.join(REPO, ".pi/handoff.json"), JSON.stringify({ staleMinutes: 1, nagMode: "block" }, null, 2));
-  const runN3 = load();
-  r = await runN3.events["agent_before_settle"][0]({ entries: [] }, ctxFor().ctx);
-  ok("nagMode=block → Pi 沒有硬擋形態，依 advisory 擋一次", r && r.continue === true);
-
-  console.log("[4b] 只有 .pi/、.agents/、交接檔本身髒 → 不擋");
-  freshRepo();
-  fs.mkdirSync(path.join(REPO, "docs"), { recursive: true });
-  fs.writeFileSync(HANDOFF, mod2seed(), { mode: 0o644 });
-  fs.utimesSync(HANDOFF, veryOld, veryOld);
-  fs.mkdirSync(path.join(REPO, ".pi"), { recursive: true });
-  fs.mkdirSync(path.join(REPO, ".agents"), { recursive: true });
-  fs.writeFileSync(path.join(REPO, ".pi/x.json"), "{}");
-  fs.writeFileSync(path.join(REPO, ".agents/y.md"), "y");
-  const run7b = load();
-  const s7b = ctxFor();
-  r = await run7b.events["agent_before_settle"][0]({ entries: [] }, s7b.ctx);
-  ok("本機產物不觸發收尾提醒", !r);
-
-  console.log("[5] 髒檔排除與非 git repo");
-  fs.rmSync(path.join(REPO, "dirty.txt"), { force: true });
-  freshRepoCommitHandoff();
-  const run8 = load();
-  const s8 = ctxFor({ cwd: path.join(ROOT, "notgit") });
-  fs.mkdirSync(path.join(ROOT, "notgit"), { recursive: true });
-  fs.writeFileSync(path.join(ROOT, "notgit/dirty"), "x");
-  r = await run8.events["agent_before_settle"][0]({ entries: [] }, s8.ctx);
-  ok("非 git repo → 不檢查", !r);
 
   console.log("[6] 快照");
   const clean = load();
   const sc = ctxFor();
-  await clean.events["session_before_compact"][0]({ reason: "manual" }, sc.ctx);
-  await clean.events["session_shutdown"][0]({ reason: "quit" }, sc.ctx);
+  ok("手動快照前沒有備份", !fs.existsSync(path.join(REPO, ".pi/transcripts")) && !fs.existsSync(path.join(REPO, ".pi/handoff-history")));
   await clean.commands["handoff-snapshot"].handler("", sc.ctx);
   const t = fs.readdirSync(path.join(REPO, ".pi/transcripts"));
   const h = fs.readdirSync(path.join(REPO, ".pi/handoff-history"));
-  ok("transcripts 3 份", t.length === 3, t.join(","));
-  ok("handoff-history 3 份", h.length === 3, h.join(","));
+  ok("手動快照備份 transcript", t.length === 1, t.join(","));
+  ok("手動快照備份交接檔", h.length === 1, h.join(","));
+  ok("手動快照使用設定的交接檔", fs.readFileSync(path.join(REPO, ".pi/handoff-history", h[0]), "utf8") === "快照內容");
 
   console.log(`\n結果：${pass} 項通過，${fail} 項失敗`);
   process.exit(fail ? 1 : 0);
 
-  function freshRepoCommitHandoff() {
-    // 交接檔 fresh 且無髒檔：把交接檔加入 commit，確認不觸發提醒
-    const run = (args) => cp.execFileSync("git", args, { cwd: REPO, stdio: "ignore" });
-    run(["add", "-A"]);
-    run(["commit", "-qm", "handoff init"]);
-  }
 })().catch((e) => { console.error("FAIL", e); process.exit(1); });

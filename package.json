@@ -1,7 +1,7 @@
 {
   "name": "pi-session-handoff",
   "version": "1.1.0",
-  "description": "Pi 的 session 交接與記憶分層 bundle：開工注入 HANDOFF、收尾提醒、50% 自動交接壓縮並續作，以及壓縮與退場前備份。",
+  "description": "Pi 的手動 session 交接與記憶分層 bundle：交接讀取、狀態與快照指令。",
   "keywords": ["pi-package", "pi-extension", "pi-skill", "pi-prompt", "handoff", "session"],
   "license": "MIT",
   "type": "module",

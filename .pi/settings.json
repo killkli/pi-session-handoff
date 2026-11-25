@@ -1,9 +1,0 @@
-{
-  "compaction": {
-    "modelOverrides": {
-      "llama.cpp/qwen3.8-flash-next-unsloth-ud-iq4_xs": {
-        "reserveTokens": 52429
-      }
-    }
-  }
-}
