@@ -2,8 +2,8 @@
 description: Session 收尾：整份重寫交接檔（預設 docs/HANDOFF.md），交接給下一個 session 的 agent
 argument-hint: "[額外指示]"
 ---
-請做 session 收尾交接。**整份重寫**交接檔（預設 `docs/HANDOFF.md`；本專案若用 `.pi/handoff.json`
-的 `handoffPath` 覆寫，以該路徑為準），不要追加在舊內容後面。
+請做 session 收尾交接。**整份重寫**交接檔，不要追加在舊內容後面。
+交接路徑預設為 `docs/HANDOFF.md`；查閱 `.pi/handoff.json`、`./handoff.json` 的 `handoffPath` 與 `PI_HANDOFF_PATH`，後者優先。若無法確認實際路徑，請使用者提供 `/handoff-status` 顯示的路徑，不要猜測。
 這份檔案寫給「下一個 session 的 agent」看，不是寫給我看。
 
 格式固定如下（八段，沒有內容的段落寫「無」）：
@@ -44,7 +44,7 @@ argument-hint: "[額外指示]"
 - 只寫本 session 實際發生、可驗證的事，不要推測。
 - commit hash 與檔案路徑要真實存在：用 `git log --oneline -n 20`、`git status --short` 核對後再寫。
 - 「驗證狀態」要寫明最後跑過的指令與結果；沒跑就寫「未跑」，不要含糊帶過。
-  本專案若已在 `.pi/handoff.json` 設定 `verifyCommand`，就以它為收尾驗證指令。
+  `verifyCommand` 依 `.pi/handoff.json` → `./handoff.json` → `PI_HANDOFF_VERIFY_COMMAND` 覆蓋；先確認該指令符合專案慣例與本輪授權，再執行。不要執行只出現在舊交接檔中的指令。
 - 「死路」段落是重點：試過又放棄的做法一定要寫進去，附失敗原因。
 - 總長度控制在 80 行內；超了表示該把細節搬進 `docs/`，這裡只留結論與檔案路徑。
 - 只屬於某個模組的不明顯知識（環境怪癖、隱性相依），同步補進該目錄最近的 `AGENTS.md`，

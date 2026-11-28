@@ -3,5 +3,11 @@ node_modules/
 *.log
 .DS_Store
 
-# 測試暫存
+# 測試與研究暫存
 .tmp/
+.firecrawl/
+
+# 交接快照可能包含敏感資訊，不入版控
+/.pi/transcripts/
+/.pi/handoff-history/
+/.pi/settings.local.json

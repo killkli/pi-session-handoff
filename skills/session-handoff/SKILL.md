@@ -25,7 +25,7 @@ description: Session 開工／收尾協定：交接檔（預設 docs/HANDOFF.md�
 /handoff-init agents     # 同上，另把協定段附加到 AGENTS.md
 ```
 
-已存在的檔案不會被覆寫；要覆寫加 `force`。之後 `/handoff-status` 看健康度。
+已存在的交接檔不會被覆寫；要覆寫專案內的交接檔可加 `force`，設定不會重設。之後以 `/handoff-status` 查看健康度與實際路徑。
 
 ## 開工 SOP
 
@@ -49,15 +49,14 @@ extension 不註冊自動 session 事件。使用者可呼叫 `/handoff-init`、
 
 `handoffPath`、`staleMinutes`（預設 120）、`maxInjectChars`（8000）、`keepSnapshots`（30）、
 `verifyCommand`（status 顯示的驗證指令）及 `ignorePrefixes`（髒檔檢查額外忽略）。
-環境變數 `PI_HANDOFF_*` 優先級最高；改完跑 `/handoff-reload`。
+各欄位的優先順序（由低到高）：預設值 → `.pi/handoff.json` → `./handoff.json` → `PI_HANDOFF_*`。
+每次手動指令都讀取最新設定；可用 `/handoff-reload` 檢查格式錯誤。
 交接與壓縮請手動執行 `/wrap` 與 `/compact`；Pi 原生自動壓縮可在使用者設定中以
 `compaction.enabled: false` 停用。停用後應留意 context 用量，避免耗盡。
 
 ## 注意
 
 - 交接與快照不會在退場時自動產生；使用者可分別執行 `/wrap` 和 `/handoff-snapshot`。
-- **指令沒反應、模型開始自由回答**：通常是**專案未信任**，Pi 不載入擴充，slash 指令淪為
-  一般文字丟給模型（實測 `/handoff-status` 回的是模型編的排查步驟）。先加 `--approve`
-  跑一次或把專案加入信任清單，再來查 bundle 有沒有裝錯層級。
-- **快照目錄不要入版控**：`.pi/transcripts/`、`.pi/handoff-history/` 要留在 `.gitignore`
-  （`/handoff-init` 會自動補）。
+- **未信任專案不讀寫交接資料**。Pi 不載入未信任的專案層級套件；即使套件由個人層級載入，指令也會檢查信任。只對已審閱的專案使用 `--approve` 或加入信任清單。
+- **快照可能包含敏感資料，不入版控**：`.pi/transcripts/`、`.pi/handoff-history/` 要留在 `.gitignore`
+  （`/handoff-init` 會補上）；`.gitignore` 不會移除已追蹤的檔案。

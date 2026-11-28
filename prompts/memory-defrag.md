@@ -8,8 +8,8 @@ argument-hint: "[focus: agents|handoff|all]"
 
 步驟：
 
-1. 盤點：列出根目錄 `AGENTS.md`、各子目錄 `AGENTS.md`、交接檔（預設 `docs/HANDOFF.md`），
-   統計行數與重複率；先讀完再動手。
+1. 盤點：列出根目錄 `AGENTS.md`、各子目錄 `AGENTS.md`、交接檔，統計行數與重複率；先讀完再動手。
+   交接路徑預設為 `docs/HANDOFF.md`，依 `.pi/handoff.json` → `./handoff.json` → `PI_HANDOFF_PATH` 覆蓋。若無法確認，請使用者提供 `/handoff-status` 顯示的路徑。
 2. 逐條判定，產出三類清單：
    - **保留**：仍然成立、且無法被自動化檢查取代的規則與踩坑。
    - **刪除**：已過期（指令不存在、檔案已改名、行為已改）、或已被 lint／驗證腳本

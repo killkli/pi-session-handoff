@@ -8,26 +8,27 @@
 
 ## 安裝
 
-```sh
-# 個人層級（所有專案可用，寫入 ~/.pi/agent/settings.json）
-pi install /Users/johnchen/AICode/pi-session-handoff
-# 或從 git（推上 GitHub 後）
-pi install git:github.com/<you>/pi-session-handoff
+已用 Pi 1.6.1 驗證。從 Git 安裝：
 
-# 只裝在單一專案（寫入該專案 .pi/settings.json）
-cd /path/to/project && pi install /Users/johnchen/AICode/pi-session-handoff -l
+```sh
+# 個人層級（寫入 ~/.pi/agent/settings.json）
+pi install git:github.com/killkli/pi-session-handoff
+
+# 或只裝在目前專案（寫入 .pi/settings.json）
+pi install git:github.com/killkli/pi-session-handoff -l
 ```
 
-試載不寫設定（單次）：`pi -e /Users/johnchen/AICode/pi-session-handoff`
+也可指定本機 clone 的絕對路徑，例如 `pi install /path/to/pi-session-handoff`。
+單次試載、不寫設定：`pi -e /path/to/pi-session-handoff`。
 
 ## 每個專案只做一次
 
 ```
-/handoff-init            # 建立 docs/HANDOFF.md ＋ .pi/handoff.json，並補 .gitignore
+/handoff-init            # 建立交接檔（預設 docs/HANDOFF.md）、.pi/handoff.json，並補 .gitignore
 /handoff-init agents     # 同上，另把協定段附加到 AGENTS.md
 ```
 
-已存在的檔案不覆寫（要覆寫加 `force`）。之後就照開工／收尾節奏走。
+可重複執行。`force` 只覆寫專案內的交接檔，不重設既有設定，也不覆寫 `.gitignore` 或 `AGENTS.md` 的既有內容。專案外的交接檔需手動建立。
 
 ## 三層存放
 
@@ -52,7 +53,7 @@ cd /path/to/project && pi install /Users/johnchen/AICode/pi-session-handoff -l
 | `/handoff-status` | 交接檔健康度：存在與否、更新於、髒檔數、下一步第 1 項、設定來源 |
 | `/handoff-read` | 手動讀取交接內容，提供給下一輪提示 |
 | `/handoff-snapshot` | 立刻備份 transcript 與交接檔（手動存檔點） |
-| `/handoff-reload` | 重載 `.pi/handoff.json` |
+| `/handoff-reload` | 重新讀取並檢查設定來源與格式 |
 | `/wrap [額外指示]` | 收尾：整份重寫交接檔 |
 | `/compact [指示]` | Pi 內建的手動壓縮指令 |
 | `/retro [聚焦範圍]` | 只報本 session 實際阻礙，優先建議做檢查而非文字規則 |
@@ -60,18 +61,19 @@ cd /path/to/project && pi install /Users/johnchen/AICode/pi-session-handoff -l
 
 ## 設定（`.pi/handoff.json`）
 
-讀取順序：內建預設 ← `.pi/handoff.json` ← `./handoff.json` ← 環境變數 `PI_HANDOFF_*`。
+優先順序（由低到高）：內建預設 → `.pi/handoff.json` → `./handoff.json` → `PI_HANDOFF_*`。
+每個欄位各自覆蓋；未填或格式錯誤的欄位保留上一層值。每次手動執行都會讀取最新設定，不必先跑 `/handoff-reload`；`/handoff-status` 和 `/handoff-reload` 會顯示設定警告。
 
-| 欄位 | 預設 | 說明 |
-| --- | --- | --- |
-| `handoffPath` | `docs/HANDOFF.md` | 交接檔路徑（相對專案根） |
-| `staleMinutes` | `120` | 超過即視為過舊 |
-| `maxInjectChars` | `8000` | 手動讀取交接內容的上限 |
-| `keepSnapshots` | `30` | 兩種快照各保留幾份 |
-| `verifyCommand` | `""` | status 顯示的驗證指令，例：`tools/run_tests.sh` |
-| `ignorePrefixes` | `[]` | 髒檔檢查額外忽略的前綴 |
+| 欄位 | 預設 | 環境變數 | 說明 |
+| --- | --- | --- | --- |
+| `handoffPath` | `docs/HANDOFF.md` | `PI_HANDOFF_PATH` | 相對於 Pi 工作目錄，亦可指定絕對路徑 |
+| `staleMinutes` | `120` | `PI_HANDOFF_STALE_MINUTES` | 非負數，超過即視為過舊 |
+| `maxInjectChars` | `8000` | `PI_HANDOFF_MAX_INJECT_CHARS` | 手動讀取上限（UTF-16 碼元）；`0` 不提供交接內容 |
+| `keepSnapshots` | `30` | `PI_HANDOFF_KEEP_SNAPSHOTS` | 兩種快照各自保留的份數；`0` 不新建也不刪除 |
+| `verifyCommand` | `""` | `PI_HANDOFF_VERIFY_COMMAND` | 例如 `npm test`；extension 只顯示、不執行 |
+| `ignorePrefixes` | `[]` | — | Git 狀態額外忽略的路徑前綴，相對於 Pi 工作目錄 |
 
-髒檔檢查一律排除 `.pi/`、`.agents/` 與交接檔本身；不是 git repo 時自動跳過檢查。
+`/handoff-status` 統計整個 Git 工作樹；排除 `.pi/`、`.agents/` 和交接檔的確切路徑。重新命名只計一筆，且兩端都屬於忽略路徑時才排除。非 Git 儲存庫或 Git 失敗時顯示「未檢查」。
 
 ### 手動壓縮
 
@@ -87,25 +89,22 @@ cd /path/to/project && pi install /Users/johnchen/AICode/pi-session-handoff -l
 
 ## 注意
 
-- 快照由 `/handoff-snapshot` 手動建立；快照目錄務必留在 `.gitignore`。
-- **指令沒執行、模型開始自由回答** → 通常是**專案尚未信任**（未信任時 Pi 不載入擴充，
-  slash 指令就變成一般文字丟給模型）。加 `--approve` 跑一次，或先在本專案信任 Pi。
-  實測：`/handoff-status` 在未信任的 `/tmp` 專案回的是模型編的排查步驟，不是指令輸出。
-- 卸載：`pi remove /Users/johnchen/AICode/pi-session-handoff`（`-l` 卸專案層級）。
-  已建立的 `docs/HANDOFF.md`、`AGENTS.md` 段落不會被自動移除。
+- 快照可能包含原始提示、程式碼、指令輸出與憑證。先跑 `/handoff-init` 補上忽略規則，不要上傳或提交快照；`.gitignore` 不會移除已追蹤的檔案。新快照在支援 Unix 權限的檔案系統上只開放擁有者讀寫。
+- 只對你已審閱的專案授予信任。未信任時，專案層級套件不會載入；即使從個人層級或 `-e` 載入，擴充指令也不讀寫交接資料。`--approve` 僅授權該次 Pi 啟動。
+- 卸載：`pi remove <安裝來源>`（專案層級加 `-l`）。已建立的交接檔、設定與 `AGENTS.md` 段落不會被自動移除。
 
 ## 開發與驗證
 
-```sh
-node test/behaviour.cjs   # 行為測試（jiti＋mock context，不打模型、不碰你的 repo）
+需要 Node.js 22.19.0 以上與 Git。不需全域安裝 Pi 或提供模型金鑰。
 
-# 端到端：找個暫存專案真的安裝並跑指令
-mkdir -p /tmp/x && cd /tmp/x && git init -q .
-pi install /Users/johnchen/AICode/pi-session-handoff -l
-pi --approve --no-session --no-tools -p "/handoff-init agents"
-pi --approve --no-session --no-tools -p "/handoff-status"
+```sh
+npm ci --ignore-scripts
+npm run check         # TypeScript 型別檢查、行為測試、Pi CLI 冒煙測試
+npm pack --dry-run    # 檢查要發行的檔案
 ```
 
-行為測試涵蓋初始化、手動讀取與快照，以及高用量時不自動交接或壓縮。
+測試使用獨立暫存專案；CLI 測試以離線模式載入實際套件，不呼叫模型。GitHub Actions 在 Ubuntu／Node 22 與 macOS／Node 24 執行相同檢查。
+
+實作參考：[Pi 擴充 API](https://docs.pi.dev/latest/extensions)、[Pi 套件規範](https://docs.pi.dev/latest/packages)、[Git Porcelain 格式](https://git-scm.com/docs/git-status#_porcelain_format_version_1)、[Node.js 檔案 API](https://nodejs.org/api/fs.html)、[Node.js 測試執行器](https://nodejs.org/api/test.html)、[GitHub Actions Node.js 指南](https://docs.github.com/actions/automating-builds-and-tests/building-and-testing-nodejs)。
 
 授權：MIT。

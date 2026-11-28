@@ -4,13 +4,27 @@
   "description": "Pi 的手動 session 交接與記憶分層 bundle：交接讀取、狀態與快照指令。",
   "keywords": ["pi-package", "pi-extension", "pi-skill", "pi-prompt", "handoff", "session"],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/killkli/pi-session-handoff.git"
+  },
   "type": "module",
-  "sideEffects": false,
+  "engines": { "node": ">=22.19.0" },
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.6.1",
+    "@types/node": "22.20.7",
+    "typescript": "5.9.3"
+  },
   "files": [
-    "package.json",
-    "README.md",
     "CHANGELOG.md",
-    "LICENSE",
     "extensions",
     "prompts",
     "skills"
